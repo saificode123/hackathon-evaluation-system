@@ -1,0 +1,35 @@
+# Dependencies (never commit — Render installs via pnpm install)
+node_modules
+**/node_modules
+.pnpm-store
+
+# Environment & secrets (never commit)
+.env
+.env.*
+.env.local
+.env.*.local
+**/.env
+**/.env.example
+
+# Build output
+dist/
+**/dist/
+*.tsbuildinfo
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Vite
+.vite/
+
+# Optional local tooling
+.cursor/

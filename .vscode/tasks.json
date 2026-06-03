@@ -1,0 +1,98 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pnpm: install",
+      "type": "shell",
+      "command": "pnpm install",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "CI": "true"
+        }
+      },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "dev: hackathon-eval (frontend)",
+      "type": "shell",
+      "command": "pnpm --filter @workspace/hackathon-eval run dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "ready in|Local:"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "dev: api-server",
+      "type": "shell",
+      "command": "pnpm --filter @workspace/api-server run dev",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PORT": "5000",
+          "NODE_ENV": "development"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "api",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Server listening"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "dev: all (frontend + API)",
+      "dependsOn": ["dev: hackathon-eval (frontend)", "dev: api-server"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "build: hackathon-eval",
+      "type": "shell",
+      "command": "pnpm --filter @workspace/hackathon-eval run build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    },
+    {
+      "label": "build: api-server",
+      "type": "shell",
+      "command": "pnpm --filter @workspace/api-server run build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    },
+    {
+      "label": "typecheck: workspace",
+      "type": "shell",
+      "command": "pnpm run typecheck",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    }
+  ]
+}
