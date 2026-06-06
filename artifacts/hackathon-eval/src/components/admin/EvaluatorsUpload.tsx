@@ -5,7 +5,7 @@ import {
   uploadEvaluatorsFromExcel,
   deleteEvaluator,
   deleteAllEvaluators,
-  fetchCollectionOnce,
+  fetchAllEvaluatorsForAdmin,
   fetchUniqueTeams,
   type EvaluatorUploadResult,
 } from "../../lib/adminUpload";
@@ -39,21 +39,10 @@ export default function EvaluatorsUpload() {
     setLoadingList(true);
     try {
       const [evaluatorsData, teamsData] = await Promise.all([
-        fetchCollectionOnce("evaluators", (id, d) => ({
-          id,
-          uid: String(d.uid ?? id),
-          srNo: d.srNo as number | undefined,
-          name: String(d.name ?? ""),
-          email: String(d.email ?? ""),
-          password: String(d.password ?? ""),
-          venue: String(d.venue ?? ""),
-          assignedTeamIds: Array.isArray(d.assignedTeamIds) ? (d.assignedTeamIds as string[]) : [],
-        })),
+        fetchAllEvaluatorsForAdmin(),
         fetchUniqueTeams(),
       ]);
-      setEvaluators(
-        evaluatorsData.sort((a, b) => (a.srNo ?? 0) - (b.srNo ?? 0) || a.name.localeCompare(b.name)),
-      );
+      setEvaluators(evaluatorsData);
       setTeams(teamsData);
     } catch {
       setError("Failed to load evaluators list.");
@@ -202,8 +191,8 @@ export default function EvaluatorsUpload() {
       <div className="card" style={{ marginTop: "1rem" }}>
         <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "0.75rem" }}>
           <div>
-            <div className="card-title">Uploaded Evaluators ({evaluators.length})</div>
-            <div className="card-subtitle">View, assign teams, search, or delete evaluator records.</div>
+            <div className="card-title">All Evaluators ({evaluators.length})</div>
+            <div className="card-subtitle">Excel-uploaded and manually created evaluators — assign teams, search, or delete.</div>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             {evaluators.length > 0 && (

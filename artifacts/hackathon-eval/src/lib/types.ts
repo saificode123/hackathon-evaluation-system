@@ -14,6 +14,7 @@ export interface AppUser {
   role: Role;
   disabled?: boolean;
   venue?: string;
+  srNo?: number;
 }
 
 export interface Project {

@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword, sendPasswordResetEmail
 } from "firebase/auth";
 import { db, secondaryAuth } from "../../lib/firebase";
+import { createManualEvaluatorProfile, isSrNoTaken } from "../../lib/adminUpload";
 import type { AppUser, Role } from "../../lib/types";
 
 interface FormData {
@@ -13,9 +14,11 @@ interface FormData {
   email: string;
   password: string;
   role: Role;
+  venue: string;
+  srNo: string;
 }
 
-const initialForm: FormData = { name: "", email: "", password: "", role: "evaluator" };
+const initialForm: FormData = { name: "", email: "", password: "", role: "evaluator", venue: "", srNo: "" };
 
 export default function UsersPage() {
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -48,15 +51,54 @@ export default function UsersPage() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(""); setSuccess(""); setSubmitting(true);
+    if (form.role === "evaluator") {
+      if (!form.srNo.trim()) {
+        setError("Sr. No is required for evaluators.");
+        setSubmitting(false);
+        return;
+      }
+      const srNo = Number(form.srNo.trim());
+      if (!Number.isInteger(srNo) || srNo < 1) {
+        setError("Sr. No must be a whole number of at least 1.");
+        setSubmitting(false);
+        return;
+      }
+      if (await isSrNoTaken(srNo)) {
+        setError(`Sr. No ${srNo} is already assigned to another evaluator. Each Sr. No must be unique.`);
+        setSubmitting(false);
+        return;
+      }
+      if (!form.venue.trim()) {
+        setError("Venue is required for evaluators.");
+        setSubmitting(false);
+        return;
+      }
+    }
     try {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, form.email, form.password);
-      await setDoc(doc(db, "users", cred.user.uid), {
+      const userPayload: Record<string, unknown> = {
         name: form.name,
         email: form.email,
         role: form.role,
         disabled: false,
         createdAt: serverTimestamp(),
-      });
+      };
+      if (form.role === "evaluator") {
+        const srNo = Number(form.srNo.trim());
+        userPayload.venue = form.venue.trim();
+        userPayload.srNo = srNo;
+        userPayload.assignedTeamIds = [];
+      }
+      await setDoc(doc(db, "users", cred.user.uid), userPayload);
+      if (form.role === "evaluator") {
+        await createManualEvaluatorProfile({
+          uid: cred.user.uid,
+          name: form.name.trim(),
+          email: form.email.trim(),
+          venue: form.venue.trim(),
+          srNo: Number(form.srNo.trim()),
+        });
+      }
       await fetchUsers();
       setSuccess(`User "${form.name}" created successfully.`);
       setForm(initialForm);
@@ -79,6 +121,13 @@ export default function UsersPage() {
     if (!deleteTarget) return;
     try {
       await deleteDoc(doc(db, "users", deleteTarget.uid));
+      if (deleteTarget.role === "evaluator") {
+        try {
+          await deleteDoc(doc(db, "evaluators", deleteTarget.uid));
+        } catch {
+          // evaluators doc may not exist for legacy manual users
+        }
+      }
       setUsers((prev) => prev.filter((u) => u.uid !== deleteTarget.uid));
       setDeleteTarget(null);
       setSuccess(`User "${deleteTarget.name}" removed.`);
@@ -229,6 +278,8 @@ export default function UsersPage() {
                     <th>Name</th>
                     <th>Email</th>
                     <th>Role</th>
+                    <th>Sr.</th>
+                    <th>Venue</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -242,6 +293,12 @@ export default function UsersPage() {
                         <span className={`badge ${u.role === "evaluator" ? "badge-blue" : "badge-purple"}`}>
                           {u.role}
                         </span>
+                      </td>
+                      <td style={{ fontSize: "0.85rem", fontWeight: u.role === "evaluator" && u.srNo ? 600 : undefined }}>
+                        {u.role === "evaluator" ? (u.srNo ?? "—") : "—"}
+                      </td>
+                      <td style={{ fontSize: "0.85rem" }}>
+                        {u.role === "evaluator" ? (u.venue || "—") : "—"}
                       </td>
                       <td>
                         {u.role === "evaluator" ? (
@@ -364,11 +421,53 @@ export default function UsersPage() {
               </div>
               <div className="form-group">
                 <label className="form-label">Role *</label>
-                <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
+                <select
+                  className="form-select"
+                  value={form.role}
+                  onChange={(e) => {
+                    const role = e.target.value as Role;
+                    setForm({
+                      ...form,
+                      role,
+                      venue: role === "evaluator" ? form.venue : "",
+                      srNo: role === "evaluator" ? form.srNo : "",
+                    });
+                  }}
+                >
                   <option value="evaluator">Evaluator</option>
                   <option value="coordinator">Coordinator</option>
                 </select>
               </div>
+              {form.role === "evaluator" && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Sr. No *</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      required
+                      min={1}
+                      step={1}
+                      value={form.srNo}
+                      onChange={(e) => setForm({ ...form, srNo: e.target.value })}
+                      placeholder="e.g. 1"
+                    />
+                    <div style={{ fontSize: "0.75rem", color: "hsl(215 16% 47%)", marginTop: "0.35rem" }}>
+                      Must be unique — cannot duplicate an existing Sr. No.
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Venue *</label>
+                    <input
+                      className="form-input"
+                      required
+                      value={form.venue}
+                      onChange={(e) => setForm({ ...form, venue: e.target.value })}
+                      placeholder="e.g. Venue A1"
+                    />
+                  </div>
+                </>
+              )}
               <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.25rem" }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
                 <button type="submit" className="btn btn-primary" disabled={submitting}>

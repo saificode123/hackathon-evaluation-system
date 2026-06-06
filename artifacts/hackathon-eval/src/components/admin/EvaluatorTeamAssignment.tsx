@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import SearchableSelect from "../SearchableSelect";
 import SearchableMultiSelect from "../SearchableMultiSelect";
 import {
-  fetchCollectionOnce,
+  fetchAllEvaluatorsForAdmin,
   fetchUniqueTeams,
   saveEvaluatorTeamAssignment,
 } from "../../lib/adminUpload";
@@ -28,21 +28,10 @@ export default function EvaluatorTeamAssignment() {
     setLoading(true);
     try {
       const [evaluatorsData, teamsData] = await Promise.all([
-        fetchCollectionOnce("evaluators", (id, d) => ({
-          id,
-          uid: String(d.uid ?? id),
-          srNo: d.srNo as number | undefined,
-          name: String(d.name ?? ""),
-          email: String(d.email ?? ""),
-          password: String(d.password ?? ""),
-          venue: String(d.venue ?? ""),
-          assignedTeamIds: Array.isArray(d.assignedTeamIds) ? (d.assignedTeamIds as string[]) : [],
-        })),
+        fetchAllEvaluatorsForAdmin(),
         fetchUniqueTeams(),
       ]);
-      setEvaluators(
-        evaluatorsData.sort((a, b) => (a.srNo ?? 0) - (b.srNo ?? 0) || a.name.localeCompare(b.name)),
-      );
+      setEvaluators(evaluatorsData);
       setTeams(teamsData.sort((a, b) => a.teamId.localeCompare(b.teamId)));
     } catch {
       setError("Failed to load evaluators or teams.");
@@ -88,7 +77,11 @@ export default function EvaluatorTeamAssignment() {
     setError("");
     setSuccess("");
     try {
-      await saveEvaluatorTeamAssignment(selectedEvaluator.uid, selectedTeamIds);
+      await saveEvaluatorTeamAssignment(selectedEvaluator.uid, selectedTeamIds, {
+        name: selectedEvaluator.name,
+        email: selectedEvaluator.email,
+        venue: selectedEvaluator.venue,
+      });
       setEvaluators((prev) =>
         prev.map((e) =>
           e.uid === selectedEvaluator.uid ? { ...e, assignedTeamIds: [...selectedTeamIds] } : e,
@@ -120,7 +113,7 @@ export default function EvaluatorTeamAssignment() {
         <div className="loading-center"><div className="loading-spinner" /></div>
       ) : evaluators.length === 0 ? (
         <div className="empty-state" style={{ padding: "1.5rem 0" }}>
-          <p>Upload evaluators first, then assign teams here.</p>
+          <p>No evaluators yet. Create evaluators via Excel upload or Manage Users, then assign teams here.</p>
         </div>
       ) : (
         <>

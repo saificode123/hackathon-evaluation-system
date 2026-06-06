@@ -6,6 +6,8 @@ import {
   deleteDoc,
   getDocs,
   onSnapshot,
+  query,
+  where,
   writeBatch,
   serverTimestamp,
   type QueryDocumentSnapshot,
@@ -15,6 +17,7 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { db, secondaryAuth } from "./firebase";
 import { generateEvaluatorEmail, generateEvaluatorPassword } from "./credentials";
 import type { ParsedEvaluatorRow, ParsedTeamRow } from "./excelParse";
+import type { EvaluatorRecord } from "./types";
 import { isValidPrefixedId, normalizePrefixedIdKey } from "./idFormat";
 
 export interface EvaluatorUploadResult {
@@ -32,17 +35,75 @@ export interface TeamUploadResult {
   message?: string;
 }
 
+function parseSrNo(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value.trim());
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/** Collect all Sr. numbers already used in users + evaluators collections. */
+export async function getExistingSrNumbers(): Promise<Set<number>> {
+  const [evalSnap, userSnap] = await Promise.all([
+    getDocs(collection(db, "evaluators")),
+    getDocs(collection(db, "users")),
+  ]);
+  const srNos = new Set<number>();
+  for (const d of [...evalSnap.docs, ...userSnap.docs]) {
+    const sr = parseSrNo(d.data().srNo);
+    if (sr !== null) srNos.add(sr);
+  }
+  return srNos;
+}
+
+export async function isSrNoTaken(srNo: number): Promise<boolean> {
+  const existing = await getExistingSrNumbers();
+  return existing.has(srNo);
+}
+
 /** Create Firebase Auth accounts + users + evaluators docs from parsed Excel rows. */
 export async function uploadEvaluatorsFromExcel(
   rows: ParsedEvaluatorRow[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<EvaluatorUploadResult[]> {
   const results: EvaluatorUploadResult[] = [];
+  const existingSrNos = await getExistingSrNumbers();
+  const pendingSrNos = new Set<number>();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const email = generateEvaluatorEmail(row.name);
     const password = generateEvaluatorPassword(row.name);
+
+    if (!Number.isInteger(row.srNo) || row.srNo < 1) {
+      results.push({
+        name: row.name,
+        email,
+        password,
+        venue: row.venue,
+        status: "error",
+        message: "Invalid Sr. No — must be a whole number ≥ 1.",
+      });
+      onProgress?.(i + 1, rows.length);
+      continue;
+    }
+
+    if (existingSrNos.has(row.srNo) || pendingSrNos.has(row.srNo)) {
+      results.push({
+        name: row.name,
+        email,
+        password,
+        venue: row.venue,
+        status: "skipped",
+        message: existingSrNos.has(row.srNo)
+          ? `Sr. No ${row.srNo} already exists.`
+          : `Duplicate Sr. No ${row.srNo} in this file.`,
+      });
+      onProgress?.(i + 1, rows.length);
+      continue;
+    }
 
     try {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
@@ -53,6 +114,8 @@ export async function uploadEvaluatorsFromExcel(
         role: "evaluator",
         disabled: false,
         venue: row.venue,
+        srNo: row.srNo,
+        assignedTeamIds: row.assignedTeamIds,
         createdAt: serverTimestamp(),
       });
 
@@ -67,6 +130,8 @@ export async function uploadEvaluatorsFromExcel(
         createdAt: new Date().toISOString(),
       });
 
+      pendingSrNos.add(row.srNo);
+      existingSrNos.add(row.srNo);
       results.push({ name: row.name, email, password, venue: row.venue, status: "created" });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -186,16 +251,109 @@ export async function getExistingTeamIdKeys(): Promise<Set<string>> {
 export async function saveEvaluatorTeamAssignment(
   uid: string,
   assignedTeamIds: string[],
+  profile?: { name?: string; email?: string; venue?: string },
 ): Promise<void> {
   const batch = writeBatch(db);
-  batch.set(
-    doc(db, "evaluators", uid),
-    { assignedTeamIds, updatedAt: new Date().toISOString() },
-    { merge: true },
-  );
+  const evalPayload: Record<string, unknown> = {
+    uid,
+    assignedTeamIds,
+    updatedAt: new Date().toISOString(),
+  };
+  if (profile?.name) evalPayload.name = profile.name;
+  if (profile?.email) evalPayload.email = profile.email;
+  if (profile?.venue !== undefined) evalPayload.venue = profile.venue;
+
+  batch.set(doc(db, "evaluators", uid), evalPayload, { merge: true });
   batch.set(
     doc(db, "users", uid),
     { assignedTeamIds, updatedAt: new Date().toISOString() },
+    { merge: true },
+  );
+  await batch.commit();
+}
+
+function mapEvaluatorDoc(id: string, data: Record<string, unknown>): EvaluatorRecord {
+  const sr = parseSrNo(data.srNo);
+  return {
+    id,
+    uid: String(data.uid ?? id),
+    srNo: sr ?? undefined,
+    name: String(data.name ?? ""),
+    email: String(data.email ?? ""),
+    password: String(data.password ?? ""),
+    venue: String(data.venue ?? ""),
+    assignedTeamIds: Array.isArray(data.assignedTeamIds) ? (data.assignedTeamIds as string[]) : [],
+    createdAt: data.createdAt ? String(data.createdAt) : undefined,
+  };
+}
+
+/** Excel-uploaded + manually created evaluators (merged from evaluators + users). */
+export async function fetchAllEvaluatorsForAdmin(): Promise<EvaluatorRecord[]> {
+  const [evalSnap, userSnap] = await Promise.all([
+    getDocs(collection(db, "evaluators")),
+    getDocs(query(collection(db, "users"), where("role", "==", "evaluator"))),
+  ]);
+
+  const byUid = new Map<string, EvaluatorRecord>();
+
+  for (const d of evalSnap.docs) {
+    byUid.set(d.id, mapEvaluatorDoc(d.id, d.data()));
+  }
+
+  for (const d of userSnap.docs) {
+    const data = d.data();
+    const uid = d.id;
+    const existing = byUid.get(uid);
+    if (existing) {
+      if (!existing.srNo && data.srNo) existing.srNo = parseSrNo(data.srNo) ?? undefined;
+      if (!existing.venue && data.venue) existing.venue = String(data.venue);
+      if (
+        (!existing.assignedTeamIds || existing.assignedTeamIds.length === 0) &&
+        Array.isArray(data.assignedTeamIds)
+      ) {
+        existing.assignedTeamIds = data.assignedTeamIds as string[];
+      }
+      continue;
+    }
+    byUid.set(uid, mapEvaluatorDoc(uid, data));
+  }
+
+  return [...byUid.values()].sort(
+    (a, b) => (a.srNo ?? 0) - (b.srNo ?? 0) || a.name.localeCompare(b.name),
+  );
+}
+
+/** Create evaluators profile for manually added users (Manage Users). */
+export async function createManualEvaluatorProfile(params: {
+  uid: string;
+  name: string;
+  email: string;
+  venue: string;
+  srNo: number;
+}): Promise<void> {
+  const batch = writeBatch(db);
+  batch.set(
+    doc(db, "users", params.uid),
+    {
+      venue: params.venue,
+      srNo: params.srNo,
+      assignedTeamIds: [],
+    },
+    { merge: true },
+  );
+  batch.set(
+    doc(db, "evaluators", params.uid),
+    {
+      uid: params.uid,
+      srNo: params.srNo,
+      name: params.name,
+      email: params.email,
+      password: "",
+      venue: params.venue,
+      assignedTeamIds: [],
+      createdAt: new Date().toISOString(),
+      source: "manual",
+    },
     { merge: true },
   );
   await batch.commit();

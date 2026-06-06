@@ -48,7 +48,11 @@ export default function AssignTeamsModal({
     setSaving(true);
     setError("");
     try {
-      await saveEvaluatorTeamAssignment(evaluator.uid, selectedTeamIds);
+      await saveEvaluatorTeamAssignment(evaluator.uid, selectedTeamIds, {
+        name: evaluator.name,
+        email: evaluator.email,
+        venue: evaluator.venue,
+      });
       onSaved(evaluator.uid, selectedTeamIds);
       onClose();
     } catch {
