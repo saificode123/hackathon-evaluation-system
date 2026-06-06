@@ -13,6 +13,7 @@ export interface AppUser {
   email: string;
   role: Role;
   disabled?: boolean;
+  venue?: string;
 }
 
 export interface Project {
@@ -29,11 +30,45 @@ export interface RubricScores {
   [criterionId: string]: number;
 }
 
+/** Bulk-uploaded evaluator profile (`evaluators` collection). */
+export interface EvaluatorRecord {
+  id?: string;
+  uid: string;
+  srNo?: number;
+  name: string;
+  email: string;
+  /** Plain-text password reference for admin distribution only. */
+  password: string;
+  venue: string;
+  /** Comma-separated or array of team IDs assigned to this evaluator. */
+  assignedTeamIds?: string[];
+  createdAt?: string;
+}
+
+/** Bulk-uploaded team (`teams` collection). */
+export interface TeamRecord {
+  id?: string;
+  teamId: string;
+  teamName: string;
+  teamLeadName: string;
+  venue?: string;
+  createdAt?: string;
+}
+
+/** Admin-managed problem statement (`problems` collection). */
+export interface ProblemRecord {
+  id?: string;
+  problemId: string;
+  description: string;
+  createdAt?: string;
+}
+
 export interface Evaluation {
   id?: string;
   projectId: string;
   teamId: string;
   problemId: string;
+  teamName?: string;
   teamLead: string;
   teamMembers?: string;
   venue: string;

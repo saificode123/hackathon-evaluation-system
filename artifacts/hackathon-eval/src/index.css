@@ -340,6 +340,63 @@ tr:hover td { background: hsl(var(--muted)); }
 .criterion-guides li.criterion-guide-active { background: hsl(221 83% 53% / 0.08); font-weight: 500; color: hsl(215 25% 25%); }
 .criterion-guide-score { flex-shrink: 0; width: 1.25rem; height: 1.25rem; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.7rem; border-radius: 4px; background: hsl(var(--muted)); }
 
+/* Rubric radio options — one row per score level with full description */
+.rubric-criterion-card {
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  padding: 1rem 1.125rem;
+  margin-bottom: 1rem;
+  background: hsl(var(--card));
+}
+.rubric-criterion-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+  color: hsl(215 25% 20%);
+}
+.rubric-criterion-meta {
+  font-size: 0.78rem;
+  color: hsl(215 16% 47%);
+  margin-bottom: 0.875rem;
+}
+.rubric-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.rubric-radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.7rem 0.875rem;
+  border: 1.5px solid hsl(var(--border));
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  transition: border-color 0.15s, background 0.15s;
+}
+.rubric-radio-option:hover {
+  border-color: hsl(221 83% 53% / 0.5);
+  background: hsl(221 83% 53% / 0.03);
+}
+.rubric-radio-option.selected {
+  border-color: hsl(221 83% 53%);
+  background: hsl(221 83% 53% / 0.08);
+  box-shadow: 0 0 0 1px hsl(221 83% 53% / 0.15);
+}
+.rubric-radio-option input[type="radio"] {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  accent-color: hsl(221 83% 53%);
+  cursor: pointer;
+}
+.rubric-radio-option-text strong {
+  color: hsl(215 25% 22%);
+}
+
 /* ============================================================
    LOGIN PAGE — AI-themed redesign
    ============================================================ */

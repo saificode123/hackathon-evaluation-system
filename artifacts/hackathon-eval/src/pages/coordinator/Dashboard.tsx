@@ -5,20 +5,24 @@ import { useAuth } from "../../lib/auth";
 import { useLocation } from "wouter";
 import type { Evaluation } from "../../lib/types";
 import { calculateAverageScore } from "../../lib/rubric";
-import { countEvaluatedTeams, subscribeHackathonSettings } from "../../lib/settings";
+import { countEvaluatedTeams, getEffectiveTotalTeams, subscribeHackathonSettings } from "../../lib/settings";
+import { subscribeUploadedTeamsCount } from "../../lib/adminUpload";
 import TeamEvaluationProgress from "../../components/TeamEvaluationProgress";
 
 export default function CoordinatorDashboard() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
-  const [totalTeams, setTotalTeams] = useState(0);
+  const [settingsTotalTeams, setSettingsTotalTeams] = useState(0);
+  const [uploadedTeamsCount, setUploadedTeamsCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubSettings = subscribeHackathonSettings((settings) => {
-      setTotalTeams(settings.totalTeams);
+      setSettingsTotalTeams(settings.totalTeams);
     });
+
+    const unsubTeams = subscribeUploadedTeamsCount(setUploadedTeamsCount);
 
     const unsubEvals = onSnapshot(collection(db, "evaluations"), (snap) => {
       setEvaluations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation)));
@@ -27,9 +31,12 @@ export default function CoordinatorDashboard() {
 
     return () => {
       unsubSettings();
+      unsubTeams();
       unsubEvals();
     };
   }, []);
+
+  const totalTeams = getEffectiveTotalTeams(uploadedTeamsCount, settingsTotalTeams);
 
   const evaluatedTeams = countEvaluatedTeams(evaluations);
 
@@ -48,7 +55,7 @@ export default function CoordinatorDashboard() {
     { label: "All Evaluations", desc: "View and edit submitted evaluations", path: "/coordinator/evaluations", color: "hsl(221 83% 53%)" },
     { label: "Rankings", desc: "Projects ranked by final total score", path: "/coordinator/rankings", color: "#10b981" },
     { label: "Grace Marks", desc: "Add grace marks after all evaluators lock", path: "/coordinator/grace-marks", color: "#ec4899" },
-    { label: "Winners & Top 20", desc: "Top 3 winners and Top 20 leaderboard", path: "/coordinator/winners", color: "#f59e0b" },
+    { label: "Winners & Leaderboard", desc: "Top 3 winners and customizable top teams leaderboard", path: "/coordinator/winners", color: "#f59e0b" },
     { label: "PDF Reports", desc: "Export evaluation reports", path: "/coordinator/reports", color: "#6366f1" },
   ];
 

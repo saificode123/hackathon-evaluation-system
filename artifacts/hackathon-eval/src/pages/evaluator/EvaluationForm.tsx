@@ -1,13 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { collection, addDoc, updateDoc, query, where, getDocs, doc, getDoc } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 import { useAuth } from "../../lib/auth";
 import { useLocation } from "wouter";
 import {
-  RUBRIC_SECTIONS, calculateFinalScore, calculateSectionScores,
-  isEvaluationComplete, SCORE_LABELS, ALL_CRITERIA,
+  calculateFinalScore, calculateSectionScores,
+  isEvaluationComplete, ALL_CRITERIA,
+  RUBRIC_SCORE_OPTIONS, formatRubricOption, criterionPoints,
 } from "../../lib/rubric";
 import type { RubricScores, Evaluation } from "../../lib/types";
+import { useEvaluatorData } from "../../lib/evaluatorData";
+import SearchableSelect from "../../components/SearchableSelect";
+import { formatPrefixedId, isValidPrefixedId, prefixedIdError, normalizePrefixedIdKey } from "../../lib/idFormat";
 
 const today = new Date().toISOString().split("T")[0];
 
@@ -18,11 +22,14 @@ interface Props {
 export default function EvaluationForm({ editEvalId }: Props) {
   const { user } = useAuth();
   const [, navigate] = useLocation();
+  const { assignedTeams, problems, teams, myProfile, loading: cacheLoading, error: cacheError } = useEvaluatorData();
 
   const [form, setForm] = useState({
     teamId: "", problemId: "", date: today,
-    teamLead: "", venue: "", remarks: "",
+    teamName: "", teamLead: "", venue: "",
   });
+  const [problemDescription, setProblemDescription] = useState("");
+  const [manualMode, setManualMode] = useState(false);
   const [rubricScores, setRubricScores] = useState<RubricScores>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -35,6 +42,7 @@ export default function EvaluationForm({ editEvalId }: Props) {
   // Existing evaluation (for edit or duplicate-check unlock flow)
   const [existingEval, setExistingEval] = useState<Evaluation | null>(null);
   const [isLocked, setIsLocked] = useState(false);
+  const isEditMode = !!existingEval;
 
   const finalScore = calculateFinalScore(rubricScores);
   const sectionScores = calculateSectionScores(rubricScores);
@@ -42,6 +50,50 @@ export default function EvaluationForm({ editEvalId }: Props) {
   const total = ALL_CRITERIA.length;
   const progressPct = Math.round((filled / total) * 100);
   const complete = isEvaluationComplete(rubricScores);
+
+  const teamOptions = useMemo(
+    () => assignedTeams.map((t) => ({
+      value: t.teamId,
+      label: `${t.teamId} — ${t.teamName || t.teamLeadName || "Team"}`,
+    })),
+    [assignedTeams],
+  );
+
+  const problemOptions = useMemo(
+    () => problems.map((p) => ({
+      value: p.problemId,
+      label: p.problemId,
+    })),
+    [problems],
+  );
+
+  const hasDropdownData = teamOptions.length > 0 || problemOptions.length > 0;
+  const useDropdowns = !manualMode && !isEditMode && hasDropdownData;
+
+  // Auto-fill venue from evaluator profile on new evaluations
+  useEffect(() => {
+    if (editEvalId || isEditMode) return;
+    const venue = myProfile?.venue || user?.venue || "";
+    if (venue && !form.venue) {
+      setForm((f) => ({ ...f, venue }));
+    }
+  }, [myProfile?.venue, user?.venue, editEvalId, isEditMode]);
+
+  const handleTeamSelect = (teamId: string) => {
+    const team = assignedTeams.find((t) => t.teamId === teamId);
+    setForm((f) => ({
+      ...f,
+      teamId,
+      teamName: team?.teamName ?? "",
+      teamLead: team?.teamLeadName ?? "",
+    }));
+  };
+
+  const handleProblemSelect = (problemId: string) => {
+    const problem = problems.find((p) => p.problemId === problemId);
+    setForm((f) => ({ ...f, problemId }));
+    setProblemDescription(problem?.description ?? "");
+  };
 
   // Load existing evaluation when editEvalId is provided
   useEffect(() => {
@@ -77,10 +129,12 @@ export default function EvaluationForm({ editEvalId }: Props) {
           teamId: ev.teamId,
           problemId: ev.problemId,
           date: ev.date,
+          teamName: ev.teamName ?? "",
           teamLead: ev.teamLead,
           venue: ev.venue ?? "",
-          remarks: ev.remarks ?? "",
         });
+        const prob = problems.find((p) => p.problemId === ev.problemId);
+        setProblemDescription(prob?.description ?? "");
         setRubricScores({ ...ev.rubricScores });
       } catch {
         setError("Failed to load evaluation. Please try again.");
@@ -88,7 +142,7 @@ export default function EvaluationForm({ editEvalId }: Props) {
         setLoadingEdit(false);
       }
     })();
-  }, [editEvalId, user?.uid]);
+  }, [editEvalId, user?.uid, problems]);
 
   const setScore = (criterionId: string, score: number) => {
     setRubricScores((prev) => ({ ...prev, [criterionId]: score }));
@@ -102,6 +156,24 @@ export default function EvaluationForm({ editEvalId }: Props) {
     if (!form.teamId.trim() || !form.problemId.trim() || !form.teamLead.trim()) {
       setError("Please fill in all required fields (Team ID, Problem ID, Team Lead).");
       return;
+    }
+    if (!isEditMode) {
+      if (!isValidPrefixedId("T", form.teamId)) {
+        setError(prefixedIdError("T", "Team ID"));
+        return;
+      }
+      if (!isValidPrefixedId("P", form.problemId)) {
+        setError(prefixedIdError("P", "Problem ID"));
+        return;
+      }
+      const teamKey = normalizePrefixedIdKey(form.teamId);
+      const teamRegistered = teams.some(
+        (t) => normalizePrefixedIdKey(t.teamId) === teamKey,
+      );
+      if (!teamRegistered) {
+        setError(`Team ID ${teamKey} is not registered. Each Team ID must exist in the system exactly once — contact Admin.`);
+        return;
+      }
     }
     if (!complete) {
       setError("Please score all criteria (1–5) before submitting.");
@@ -119,7 +191,7 @@ export default function EvaluationForm({ editEvalId }: Props) {
       const dup = await getDocs(
         query(collection(db, "evaluations"),
           where("evaluatorId", "==", user!.uid),
-          where("teamId", "==", form.teamId.trim())
+          where("teamId", "==", form.teamId.trim().toUpperCase())
         )
       );
       if (!dup.empty) {
@@ -147,11 +219,14 @@ export default function EvaluationForm({ editEvalId }: Props) {
     setShowConfirm(false);
     setSubmitting(true);
     try {
-      const projectId = `${form.teamId.trim()}-${form.problemId.trim()}`.toLowerCase().replace(/\s+/g, "-");
+      const teamId = form.teamId.trim().toUpperCase();
+      const problemId = form.problemId.trim().toUpperCase();
+      const projectId = `${teamId}-${problemId}`.toLowerCase().replace(/\s+/g, "-");
       const payload = {
         projectId,
-        teamId: form.teamId.trim(),
-        problemId: form.problemId.trim(),
+        teamId,
+        problemId,
+        teamName: form.teamName.trim(),
         teamLead: form.teamLead.trim(),
         venue: form.venue.trim(),
         date: form.date,
@@ -160,7 +235,7 @@ export default function EvaluationForm({ editEvalId }: Props) {
         rubricScores,
         sectionScores,
         finalScore,
-        remarks: form.remarks.trim(),
+        remarks: existingEval?.remarks ?? "",
         submittedAt: new Date().toISOString(),
         locked: true,
       };
@@ -242,7 +317,12 @@ export default function EvaluationForm({ editEvalId }: Props) {
             <button className="btn btn-secondary" onClick={() => navigate("/evaluator")}>Back to Dashboard</button>
             {!editEvalId && (
               <button className="btn btn-primary" onClick={() => {
-                setForm({ teamId: "", problemId: "", date: today, teamLead: "", venue: "", remarks: "" });
+                setForm({
+                  teamId: "", problemId: "", date: today,
+                  teamName: "", teamLead: "",
+                  venue: myProfile?.venue || user?.venue || "",
+                });
+                setProblemDescription("");
                 setRubricScores({});
                 setExistingEval(null);
                 setSuccess(false);
@@ -255,8 +335,6 @@ export default function EvaluationForm({ editEvalId }: Props) {
       </div>
     );
   }
-
-  const isEditMode = !!existingEval;
 
   return (
     <div className="page-content">
@@ -301,37 +379,115 @@ export default function EvaluationForm({ editEvalId }: Props) {
       <form onSubmit={handleSubmitClick}>
         {/* Project Info */}
         <div className="card" style={{ marginBottom: "1rem" }}>
-          <div className="card-header"><div className="card-title">Project Information</div></div>
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">Team ID *</label>
-              <input className="form-input" required value={form.teamId}
-                onChange={(e) => setForm({ ...form, teamId: e.target.value })}
-                placeholder="e.g. T001"
-                readOnly={isEditMode}
-                style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Problem ID *</label>
-              <input className="form-input" required value={form.problemId}
-                onChange={(e) => setForm({ ...form, problemId: e.target.value })}
-                placeholder="e.g. P001"
-                readOnly={isEditMode}
-                style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
-              />
-            </div>
+          <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "0.5rem" }}>
+            <div className="card-title">Project Information</div>
+            {!isEditMode && (
+              <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8rem", cursor: "pointer", color: "hsl(215 16% 47%)" }}>
+                <input
+                  type="checkbox"
+                  checked={manualMode}
+                  onChange={(e) => setManualMode(e.target.checked)}
+                />
+                Enter details manually
+              </label>
+            )}
           </div>
+
+          {cacheLoading && !isEditMode && (
+            <div style={{ fontSize: "0.82rem", color: "hsl(215 16% 47%)", marginBottom: "0.75rem" }}>
+              Loading team &amp; problem data…
+            </div>
+          )}
+          {cacheError && !isEditMode && (
+            <div className="alert alert-info" style={{ marginBottom: "0.75rem", fontSize: "0.82rem" }}>
+              {cacheError} Use manual entry below if dropdowns are empty.
+            </div>
+          )}
+
           <div className="form-row">
+            {useDropdowns && teamOptions.length > 0 ? (
+              <SearchableSelect
+                label="Team ID"
+                required
+                value={form.teamId}
+                onChange={handleTeamSelect}
+                options={teamOptions}
+                placeholder="Search teams…"
+                emptyMessage="No teams match your search"
+              />
+            ) : (
+              <div className="form-group">
+                <label className="form-label">Team ID *</label>
+                <input className="form-input" required value={form.teamId}
+                  onChange={(e) => setForm({ ...form, teamId: formatPrefixedId("T", e.target.value) })}
+                  placeholder="e.g. T001"
+                  maxLength={4}
+                  readOnly={isEditMode}
+                  style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
+                />
+              </div>
+            )}
+
+            {useDropdowns && problemOptions.length > 0 ? (
+              <SearchableSelect
+                label="Problem ID"
+                required
+                value={form.problemId}
+                onChange={handleProblemSelect}
+                options={problemOptions}
+                placeholder="Search problems…"
+                emptyMessage="No problems match your search"
+              />
+            ) : (
+              <div className="form-group">
+                <label className="form-label">Problem ID *</label>
+                <input className="form-input" required value={form.problemId}
+                  onChange={(e) => {
+                    const pid = formatPrefixedId("P", e.target.value);
+                    const prob = problems.find((p) => p.problemId.toLowerCase() === pid.toLowerCase());
+                    setForm({ ...form, problemId: pid });
+                    setProblemDescription(prob?.description ?? "");
+                  }}
+                  placeholder="e.g. P001"
+                  maxLength={4}
+                  readOnly={isEditMode}
+                  style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
+                />
+              </div>
+            )}
+          </div>
+
+          {problemDescription && (
+            <div style={{ marginBottom: "1rem", padding: "0.75rem 1rem", background: "hsl(210 40% 96%)", borderRadius: 8, fontSize: "0.85rem", lineHeight: 1.6 }}>
+              <strong style={{ display: "block", marginBottom: "0.25rem", color: "hsl(221 83% 53%)" }}>Problem Description</strong>
+              {problemDescription}
+            </div>
+          )}
+
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Team Name</label>
+              <input
+                className="form-input"
+                value={form.teamName}
+                onChange={(e) => setForm({ ...form, teamName: e.target.value })}
+                placeholder="Auto-filled from team selection"
+                readOnly={!manualMode && !isEditMode && !!form.teamId && !!form.teamName}
+                style={!manualMode && form.teamName ? { background: "hsl(var(--muted))" } : undefined}
+              />
+            </div>
             <div className="form-group">
               <label className="form-label">Team Lead *</label>
               <input className="form-input" required value={form.teamLead}
                 onChange={(e) => setForm({ ...form, teamLead: e.target.value })}
                 placeholder="Name of team lead"
-                readOnly={isEditMode}
-                style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
+                readOnly={isEditMode || (!manualMode && !!form.teamLead && !!form.teamId)}
+                style={isEditMode || (!manualMode && form.teamLead) ? { background: "hsl(var(--muted))" } : undefined}
               />
             </div>
+          </div>
+
+          <div className="form-row">
             <div className="form-group">
               <label className="form-label">Date *</label>
               <input type="date" className="form-input" required value={form.date}
@@ -340,15 +496,18 @@ export default function EvaluationForm({ editEvalId }: Props) {
                 style={isEditMode ? { background: "hsl(var(--muted))" } : undefined}
               />
             </div>
-          </div>
-          <div className="form-row">
             <div className="form-group">
               <label className="form-label">Venue</label>
               <input className="form-input" value={form.venue}
                 onChange={(e) => setForm({ ...form, venue: e.target.value })}
                 placeholder="e.g. Hall A, Lab 3"
+                readOnly={!manualMode && !!(myProfile?.venue || user?.venue) && !isEditMode}
+                style={!manualMode && form.venue ? { background: "hsl(var(--muted))" } : undefined}
               />
             </div>
+          </div>
+
+          <div className="form-row">
             <div className="form-group">
               <label className="form-label">Evaluator</label>
               <input className="form-input" value={user?.name ?? ""} readOnly style={{ background: "hsl(var(--muted))" }} />
@@ -356,98 +515,64 @@ export default function EvaluationForm({ editEvalId }: Props) {
           </div>
         </div>
 
-        {/* Score legend */}
-        <div className="card" style={{ marginBottom: "1rem" }}>
-          <div style={{ display: "flex", flex: "wrap", gap: "0.75rem", flexWrap: "wrap" }}>
-            {[1, 2, 3, 4, 5].map((n) => (
-              <div key={n} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.78rem" }}>
-                <div className={`score-btn selected-${n}`} style={{ width: 28, height: 28, fontSize: "0.75rem", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, border: "2px solid" }}>{n}</div>
-                <span><strong>{SCORE_LABELS[n].label}</strong> — {SCORE_LABELS[n].desc}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Rubric sections */}
-        {RUBRIC_SECTIONS.map((section) => {
-          const sScore = sectionScores[section.id] ?? 0;
+        {/* Rubric — radio per score level with full description */}
+        {ALL_CRITERIA.map((criterion, index) => {
+          const score = rubricScores[criterion.id] ?? 0;
+          const pts = score > 0 ? criterionPoints(score, criterion.weight) : 0;
           return (
-            <div key={section.id} className="rubric-section" style={{ marginBottom: "1rem" }}>
-              <div className="rubric-section-header">
-                <div>
-                  <span style={{ color: "hsl(221 83% 53%)", marginRight: "0.5rem" }}>Section {section.id}</span>
-                  {section.name}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "0.8rem", color: "hsl(215 16% 47%)" }}>{sScore.toFixed(2)}/{section.weight}</span>
-                  <span className="rubric-section-weight">{section.weight} pts</span>
-                </div>
+            <div key={criterion.id} className="rubric-criterion-card">
+              <div className="rubric-criterion-title">
+                CRITERION {index + 1}: {criterion.name}
+                <span style={{ color: "#dc2626", marginLeft: 4 }}>*</span>
               </div>
-              {section.criteria.map((criterion) => {
-                const score = rubricScores[criterion.id];
-                const selectedGuide = score && criterion.scoreGuides?.[score];
-                return (
-                  <div key={criterion.id} className="rubric-criterion">
-                    <div className="rubric-criterion-body">
-                      <div className="criterion-name">{criterion.name}</div>
-                      <div className="criterion-weight">Max: {criterion.weight} pts</div>
-                      {selectedGuide && (
-                        <p className="criterion-selected-guide">
-                          <strong>Score {score}:</strong> {selectedGuide}
-                        </p>
-                      )}
-                      {criterion.scoreGuides && (
-                        <details className="criterion-guides">
-                          <summary>View score guide (1–5)</summary>
-                          <ul>
-                            {[1, 2, 3, 4, 5].map((n) => (
-                              <li key={n} className={score === n ? "criterion-guide-active" : undefined}>
-                                <span className="criterion-guide-score">{n}</span>
-                                {criterion.scoreGuides![n]}
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-                    </div>
-                    <div className="score-buttons">
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <button key={n} type="button"
-                          className={`score-btn ${score === n ? `selected-${n}` : ""}`}
-                          onClick={() => setScore(criterion.id, n)}
-                          title={criterion.scoreGuides?.[n] ?? SCORE_LABELS[n].label}
-                        >{n}</button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+              <div className="rubric-criterion-meta">
+                Weight: {criterion.weight}%
+                {score > 0 && (
+                  <span style={{ marginLeft: "0.75rem", fontWeight: 600, color: "hsl(221 83% 53%)" }}>
+                    Score: {pts}/{criterion.weight} pts
+                  </span>
+                )}
+              </div>
+              <div className="rubric-radio-group" role="radiogroup" aria-label={criterion.name}>
+                {RUBRIC_SCORE_OPTIONS.map((n) => {
+                  const desc = criterion.scoreGuides?.[n];
+                  if (!desc) return null;
+                  return (
+                    <label
+                      key={n}
+                      className={`rubric-radio-option ${score === n ? "selected" : ""}`}
+                    >
+                      <input
+                        type="radio"
+                        name={`criterion-${criterion.id}`}
+                        value={n}
+                        checked={score === n}
+                        onChange={() => setScore(criterion.id, n)}
+                      />
+                      <span className="rubric-radio-option-text">
+                        <strong>{formatRubricOption(n, desc)}</strong>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           );
         })}
-
-        {/* Additional remarks */}
-        <div className="card" style={{ marginBottom: "1.5rem" }}>
-          <div className="card-header">
-            <div className="card-title">Additional Remarks</div>
-            <div className="card-subtitle">Optional feedback for this team</div>
-          </div>
-          <textarea className="form-textarea" rows={4} value={form.remarks}
-            onChange={(e) => setForm({ ...form, remarks: e.target.value })}
-            placeholder="Enter any additional feedback, observations, or recommendations..."
-          />
-        </div>
 
         {/* Score summary */}
         <div className="card" style={{ marginBottom: "1.5rem" }}>
           <div className="card-header"><div className="card-title">Score Summary</div></div>
           <div className="score-summary">
-            {RUBRIC_SECTIONS.map((s) => (
-              <div key={s.id} className="score-summary-item">
-                <div className="score-summary-label">Section {s.id} ({s.weight} pts)</div>
-                <div className="score-summary-value">{(sectionScores[s.id] ?? 0).toFixed(2)}</div>
-              </div>
-            ))}
+            {ALL_CRITERIA.map((c) => {
+              const pts = Math.round(((rubricScores[c.id] ?? 0) / 5) * c.weight * 100) / 100;
+              return (
+                <div key={c.id} className="score-summary-item">
+                  <div className="score-summary-label">{c.name} ({c.weight}%)</div>
+                  <div className="score-summary-value">{pts.toFixed(2)}</div>
+                </div>
+              );
+            })}
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px solid hsl(var(--border))" }}>
             <div style={{ fontWeight: 700, fontSize: "1rem" }}>Total Score</div>

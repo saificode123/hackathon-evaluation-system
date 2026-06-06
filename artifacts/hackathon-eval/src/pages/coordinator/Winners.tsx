@@ -8,15 +8,91 @@ import {
   graceMarksMapFromDocs,
   type ProjectAggregate,
 } from "../../lib/teamScores";
+import jsPDF from "jspdf";
 
 const TROPHIES = ["🥇", "🥈", "🥉"];
 const RANK_LABELS = ["1st Place — Champion", "2nd Place — Runner-Up", "3rd Place — Second Runner-Up"];
 const CARD_CLASSES = ["winner-1", "winner-2", "winner-3"];
-const TOP_LEADERBOARD_SIZE = 20;
+const DEFAULT_TOP_COUNT = 20;
 
 type WinnersTab = "top3" | "top20";
 
-function Top20LeaderboardTable({ teams }: { teams: ProjectAggregate[] }) {
+function addPdfHeader(pdf: jsPDF, title: string): number {
+  pdf.setFillColor(30, 64, 175);
+  pdf.rect(0, 0, 210, 28, "F");
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFontSize(14);
+  pdf.setFont("helvetica", "bold");
+  pdf.text("Hackathon Evaluation System — AI for a Sustainable Future 2026", 14, 11);
+  pdf.setFontSize(10);
+  pdf.setFont("helvetica", "normal");
+  pdf.text(title, 14, 20);
+  pdf.setFontSize(8);
+  pdf.text(`Generated: ${new Date().toLocaleString()}`, 140, 20);
+  pdf.setTextColor(0, 0, 0);
+  return 36;
+}
+
+function addPdfFooter(pdf: jsPDF) {
+  const pages = pdf.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    pdf.setPage(i);
+    pdf.setFontSize(7);
+    pdf.setTextColor(150, 150, 150);
+    pdf.text(`Page ${i} of ${pages} — Hackathon 2026 Leaderboard Report`, 14, 290);
+  }
+}
+
+function exportTopLeaderboardPdf(teams: ProjectAggregate[], topCount: number) {
+  const pdf = new jsPDF({ format: "a4" });
+  let y = addPdfHeader(pdf, `Top ${topCount} Teams Leaderboard`);
+
+  pdf.setFontSize(11);
+  pdf.setFont("helvetica", "bold");
+  pdf.text(`Showing top ${teams.length} team${teams.length !== 1 ? "s" : ""} by final total score`, 14, y);
+  y += 10;
+
+  pdf.setFillColor(240, 242, 248);
+  pdf.rect(14, y, 182, 7, "F");
+  pdf.setFontSize(8);
+  pdf.setFont("helvetica", "bold");
+  pdf.text("Rank", 16, y + 5);
+  pdf.text("Team", 28, y + 5);
+  pdf.text("Problem", 48, y + 5);
+  pdf.text("Team Lead", 68, y + 5);
+  pdf.text("Eval.", 118, y + 5);
+  pdf.text("Avg", 132, y + 5);
+  pdf.text("Grace", 148, y + 5);
+  pdf.text("Final", 168, y + 5);
+  y += 10;
+
+  pdf.setFont("helvetica", "normal");
+  for (const p of teams) {
+    if (y > 270) {
+      pdf.addPage();
+      y = addPdfHeader(pdf, `Top ${topCount} Teams Leaderboard (cont.)`);
+      y += 6;
+    }
+    const medal = p.rank <= 3 ? getRankMedal(p.rank) : `#${p.rank}`;
+    pdf.text(medal, 16, y);
+    pdf.text(p.teamId, 28, y);
+    pdf.text(p.problemId.slice(0, 10), 48, y);
+    pdf.text(p.teamLead.slice(0, 22), 68, y);
+    pdf.text(String(p.evaluatorsCount), 120, y);
+    pdf.text(p.averageScore.toFixed(2), 132, y);
+    pdf.text(p.graceMarks > 0 ? `+${p.graceMarks.toFixed(2)}` : "—", 148, y);
+    pdf.setFont("helvetica", "bold");
+    pdf.text(p.finalTotalMarks.toFixed(2), 168, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.line(14, y + 2, 196, y + 2);
+    y += 7;
+  }
+
+  addPdfFooter(pdf);
+  pdf.save(`hackathon-2026-top-${topCount}-leaderboard.pdf`);
+}
+
+function TopLeaderboardTable({ teams, topCount }: { teams: ProjectAggregate[]; topCount: number }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (teams.length === 0) {
@@ -31,7 +107,7 @@ function Top20LeaderboardTable({ teams }: { teams: ProjectAggregate[] }) {
   return (
     <>
       <div className="leaderboard-meta">
-        <span className="badge badge-blue">Top {Math.min(TOP_LEADERBOARD_SIZE, teams.length)}</span>
+        <span className="badge badge-blue">Top {Math.min(topCount, teams.length)}</span>
         <span style={{ fontSize: "0.85rem", color: "hsl(215 16% 47%)" }}>
           Sorted by final total (evaluator average + grace marks)
         </span>
@@ -224,6 +300,10 @@ export default function Winners() {
   const [rankings, setRankings] = useState<ProjectAggregate[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<WinnersTab>("top3");
+  const [topCountInput, setTopCountInput] = useState(String(DEFAULT_TOP_COUNT));
+  const [appliedTopCount, setAppliedTopCount] = useState(DEFAULT_TOP_COUNT);
+  const [topCountError, setTopCountError] = useState("");
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -244,14 +324,41 @@ export default function Winners() {
   }, []);
 
   const top3 = useMemo(() => rankings.slice(0, 3), [rankings]);
-  const top20 = useMemo(() => rankings.slice(0, TOP_LEADERBOARD_SIZE), [rankings]);
+  const topLeaderboard = useMemo(
+    () => rankings.slice(0, appliedTopCount),
+    [rankings, appliedTopCount],
+  );
+
+  const handleApplyTopCount = () => {
+    const parsed = Number(topCountInput.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      setTopCountError("Enter a whole number of at least 1.");
+      return;
+    }
+    setTopCountError("");
+    const effective = rankings.length > 0 ? Math.min(parsed, rankings.length) : parsed;
+    setAppliedTopCount(effective);
+    if (effective !== parsed && rankings.length > 0) {
+      setTopCountInput(String(effective));
+    }
+  };
+
+  const handleDownloadLeaderboardPdf = async () => {
+    if (topLeaderboard.length === 0) return;
+    setExportingPdf(true);
+    try {
+      exportTopLeaderboardPdf(topLeaderboard, appliedTopCount);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   return (
     <div className="page-content">
       <div className="page-header">
         <h1 className="page-title">Winners & Leaderboard</h1>
         <p className="page-subtitle">
-          Hackathon 2026 — Top 3 winners and Top 20 teams by final score (average + grace marks)
+          Hackathon 2026 — Top 3 winners and customizable top teams leaderboard
         </p>
       </div>
 
@@ -272,7 +379,7 @@ export default function Winners() {
           className={`page-tab ${activeTab === "top20" ? "active" : ""}`}
           onClick={() => setActiveTab("top20")}
         >
-          Top 20 Leaderboard
+          Top Teams Leaderboard
         </button>
       </div>
 
@@ -394,12 +501,64 @@ export default function Winners() {
       ) : (
         <div className="card">
           <div className="card-header">
-            <div className="card-title">Top 20 Teams</div>
-            <div className="card-subtitle">
-              Highest-ranked teams by final total score across all evaluations
+            <div>
+              <div className="card-title">Top {appliedTopCount} Teams</div>
+              <div className="card-subtitle">
+                Highest-ranked teams by final total score across all evaluations
+              </div>
             </div>
           </div>
-          <Top20LeaderboardTable teams={top20} />
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "0.75rem",
+              alignItems: "flex-end",
+              marginBottom: "1.25rem",
+              padding: "0 0 0.25rem",
+            }}
+          >
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
+              <label className="form-label">Number of top teams</label>
+              <input
+                type="number"
+                className="form-input"
+                min={1}
+                max={Math.max(rankings.length, 1)}
+                value={topCountInput}
+                onChange={(e) => {
+                  setTopCountInput(e.target.value);
+                  setTopCountError("");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleApplyTopCount();
+                  }
+                }}
+                placeholder="e.g. 15"
+                style={{ width: 120 }}
+              />
+            </div>
+            <button type="button" className="btn btn-primary" onClick={handleApplyTopCount}>
+              Generate Leaderboard
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleDownloadLeaderboardPdf}
+              disabled={exportingPdf || topLeaderboard.length === 0}
+            >
+              {exportingPdf ? "Generating…" : "Download PDF"}
+            </button>
+          </div>
+
+          {topCountError && (
+            <div className="alert alert-error" style={{ marginBottom: "1rem" }}>{topCountError}</div>
+          )}
+
+          <TopLeaderboardTable teams={topLeaderboard} topCount={appliedTopCount} />
         </div>
       )}
     </div>

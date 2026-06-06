@@ -8,6 +8,7 @@ import {
 } from "firebase/auth";
 import { collection, getDocs, writeBatch, doc } from "firebase/firestore";
 import { db } from "../lib/firebase";
+import EvaluatorLockedScreen from "./EvaluatorLockedScreen";
 
 interface NavItem {
   label: string;
@@ -96,6 +97,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [deleteAllSuccess, setDeleteAllSuccess] = useState(false);
 
   if (!user) return <>{children}</>;
+
+  if (user.role === "evaluator" && user.disabled === true) {
+    return <EvaluatorLockedScreen />;
+  }
 
   const openPwModal = () => {
     setCurrentPw(""); setNewPw(""); setConfirmPw("");

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 import { useAuth } from "../../lib/auth";
@@ -6,10 +6,16 @@ import { useLocation } from "wouter";
 import type { Evaluation } from "../../lib/types";
 import {
   countEvaluatedTeams,
+  getEffectiveTotalTeams,
   saveTotalTeams,
   subscribeHackathonSettings,
 } from "../../lib/settings";
 import TeamEvaluationProgress from "../../components/TeamEvaluationProgress";
+import EvaluatorsUpload from "../../components/admin/EvaluatorsUpload";
+import EvaluatorTeamAssignment from "../../components/admin/EvaluatorTeamAssignment";
+import TeamsUpload from "../../components/admin/TeamsUpload";
+import ProblemsManager from "../../components/admin/ProblemsManager";
+import { getUploadedTeamsCount } from "../../lib/adminUpload";
 
 export default function AdminDashboard() {
   const { user } = useAuth();
@@ -17,10 +23,12 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState({ evaluators: 0, coordinators: 0, evaluations: 0, projects: 0 });
   const [totalTeams, setTotalTeams] = useState(0);
   const [teamInput, setTeamInput] = useState("");
+  const [uploadedTeamsCount, setUploadedTeamsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
+  const uploadedCountRef = useRef(0);
 
   useEffect(() => {
     let evaluations: Evaluation[] = [];
@@ -36,7 +44,12 @@ export default function AdminDashboard() {
 
     const unsubSettings = subscribeHackathonSettings((settings) => {
       setTotalTeams(settings.totalTeams);
-      setTeamInput(String(settings.totalTeams > 0 ? settings.totalTeams : ""));
+      // Prefer unique uploaded team count over stale saved settings
+      if (uploadedCountRef.current > 0) {
+        setTeamInput(String(uploadedCountRef.current));
+      } else {
+        setTeamInput(String(settings.totalTeams > 0 ? settings.totalTeams : ""));
+      }
     });
 
     const unsubEvals = onSnapshot(collection(db, "evaluations"), (snap) => {
@@ -46,10 +59,16 @@ export default function AdminDashboard() {
 
     (async () => {
       try {
-        const [evalSnap, coordSnap] = await Promise.all([
+        const [evalSnap, coordSnap, teamsCount] = await Promise.all([
           getDocs(query(collection(db, "users"), where("role", "==", "evaluator"))),
           getDocs(query(collection(db, "users"), where("role", "==", "coordinator"))),
+          getUploadedTeamsCount(),
         ]);
+        setUploadedTeamsCount(teamsCount);
+        uploadedCountRef.current = teamsCount;
+        if (teamsCount > 0) {
+          setTeamInput(String(teamsCount));
+        }
         setStats((prev) => ({
           ...prev,
           evaluators: evalSnap.size,
@@ -69,6 +88,26 @@ export default function AdminDashboard() {
   }, []);
 
   const evaluatedTeams = stats.projects;
+  const effectiveTotalTeams = getEffectiveTotalTeams(uploadedTeamsCount, totalTeams);
+
+  const refreshUploadedTeamsCount = async () => {
+    try {
+      const count = await getUploadedTeamsCount();
+      setUploadedTeamsCount(count);
+      uploadedCountRef.current = count;
+      if (count > 0) {
+        setTeamInput(String(count));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleUseUploadedCount = () => {
+    if (uploadedTeamsCount > 0) {
+      setTeamInput(String(uploadedTeamsCount));
+    }
+  };
 
   const handleSaveTotalTeams = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,9 +181,37 @@ export default function AdminDashboard() {
             <div className="card-header">
               <div className="card-title">Hackathon Team Count</div>
               <div className="card-subtitle">
-                Set how many teams are participating. Coordinators see how many evaluations remain.
+                Auto-fill from uploaded Excel teams, or type manually if teams were added another way.
               </div>
             </div>
+
+            {uploadedTeamsCount > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: "0.75rem",
+                  marginBottom: "1rem",
+                  padding: "0.75rem 1rem",
+                  background: "hsl(210 40% 96%)",
+                  borderRadius: 8,
+                  fontSize: "0.85rem",
+                }}
+              >
+                <span>
+                  <strong>{uploadedTeamsCount}</strong> teams found in uploaded Excel data.
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleUseUploadedCount}
+                >
+                  Use uploaded count ({uploadedTeamsCount})
+                </button>
+              </div>
+            )}
+
             <form
               onSubmit={handleSaveTotalTeams}
               style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "flex-end", marginBottom: "1.25rem" }}
@@ -159,7 +226,7 @@ export default function AdminDashboard() {
                   required
                   value={teamInput}
                   onChange={(e) => setTeamInput(e.target.value)}
-                  placeholder="e.g. 25"
+                  placeholder={uploadedTeamsCount > 0 ? `e.g. ${uploadedTeamsCount} (from Excel)` : "e.g. 220"}
                   disabled={saving}
                 />
               </div>
@@ -167,7 +234,7 @@ export default function AdminDashboard() {
                 {saving ? "Saving…" : "Save"}
               </button>
             </form>
-            <TeamEvaluationProgress totalTeams={totalTeams} evaluatedTeams={evaluatedTeams} />
+            <TeamEvaluationProgress totalTeams={effectiveTotalTeams} evaluatedTeams={evaluatedTeams} />
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
@@ -198,13 +265,29 @@ export default function AdminDashboard() {
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>Evaluation Progress</div>
                   <div style={{ fontSize: "0.8rem", color: "hsl(215 16% 47%)", marginTop: 2 }}>
-                    {totalTeams > 0
-                      ? `${evaluatedTeams} of ${totalTeams} teams evaluated`
+                    {effectiveTotalTeams > 0
+                      ? `${evaluatedTeams} of ${effectiveTotalTeams} teams evaluated`
                       : "Set total teams above to enable tracking"}
                   </div>
                 </div>
               </div>
             </div>
+          </div>
+
+          <div style={{ marginTop: "1rem" }}>
+            <EvaluatorsUpload />
+          </div>
+
+          <div style={{ marginTop: "1rem" }}>
+            <EvaluatorTeamAssignment key={uploadedTeamsCount} />
+          </div>
+
+          <div style={{ marginTop: "1rem" }}>
+            <TeamsUpload onTeamsChanged={refreshUploadedTeamsCount} />
+          </div>
+
+          <div style={{ marginTop: "1rem" }}>
+            <ProblemsManager />
           </div>
 
           <div className="card" style={{ marginTop: "1rem" }}>
@@ -214,6 +297,9 @@ export default function AdminDashboard() {
             <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "0.5rem", fontSize: "0.875rem" }}>
               {[
                 "Set the total number of hackathon teams for progress tracking",
+                "Upload evaluators and teams via Excel bulk import",
+                "Assign teams to evaluators by matching venue",
+                "Manage Problem IDs and descriptions for evaluators",
                 "Create Evaluator and Coordinator accounts with secure passwords",
                 "Assign appropriate roles to users",
                 "Reset passwords when evaluators or coordinators are locked out",

@@ -67,3 +67,8 @@ export function getTeamEvaluationProgress(totalTeams: number, evaluatedTeams: nu
 
   return { totalTeams: safeTotal, evaluatedTeams: evaluated, remaining, percentComplete, isComplete };
 }
+
+/** Prefer admin-uploaded unique teams; fall back to saved settings when none uploaded. */
+export function getEffectiveTotalTeams(uploadedTeamsCount: number, settingsTotalTeams: number): number {
+  return uploadedTeamsCount > 0 ? uploadedTeamsCount : settingsTotalTeams;
+}

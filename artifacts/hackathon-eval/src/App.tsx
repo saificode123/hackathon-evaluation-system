@@ -1,5 +1,6 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { EvaluatorDataProvider } from "./lib/evaluatorData";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Layout from "./components/Layout";
 
@@ -22,8 +23,18 @@ function RootRedirect() {
   return <Redirect to={`/${user.role}`} />;
 }
 
+/** Single cache for all evaluator pages — fetch teams/problems once per session. */
+function EvaluatorDataWrapper({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (user?.role === "evaluator") {
+    return <EvaluatorDataProvider>{children}</EvaluatorDataProvider>;
+  }
+  return <>{children}</>;
+}
+
 function AppRoutes() {
   return (
+    <EvaluatorDataWrapper>
     <Layout>
       <Switch>
         <Route path="/" component={RootRedirect} />
@@ -98,6 +109,7 @@ function AppRoutes() {
         </Route>
       </Switch>
     </Layout>
+    </EvaluatorDataWrapper>
   );
 }
 
