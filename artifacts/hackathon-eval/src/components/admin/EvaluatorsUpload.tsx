@@ -72,7 +72,14 @@ export default function EvaluatorsUpload() {
         setProgress({ done, total }),
       );
       setResults(uploadResults);
-      setSuccess(`${uploadResults.filter((r) => r.status === "created").length} evaluators created.`);
+      const uploaded = uploadResults.filter((r) => r.status === "created").length;
+      const skipped = uploadResults.filter((r) => r.status === "skipped").length;
+      const failed = uploadResults.filter((r) => r.status === "error").length;
+      setSuccess(
+        skipped > 0 || failed > 0
+          ? `${uploaded} evaluators created/updated.${skipped > 0 ? ` ${skipped} skipped.` : ""}${failed > 0 ? ` ${failed} failed.` : ""}`
+          : `${uploaded} evaluators created.`,
+      );
       await loadEvaluators();
     } catch {
       setError("Failed to parse or upload file. Please check the format and try again.");
@@ -179,6 +186,17 @@ export default function EvaluatorsUpload() {
               {skipped > 0 && <span className="badge badge-yellow">{skipped} skipped</span>}
               {failed > 0 && <span className="badge badge-red">{failed} failed</span>}
             </div>
+            {(skipped > 0 || failed > 0) && (
+              <ul style={{ fontSize: "0.82rem", color: "hsl(215 25% 35%)", margin: 0, paddingLeft: "1.25rem" }}>
+                {results
+                  .filter((r) => r.status === "skipped" || r.status === "error")
+                  .map((r) => (
+                    <li key={`${r.email}-${r.message}`}>
+                      <strong>{r.name}</strong> — {r.message ?? r.status}
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
         )}
 

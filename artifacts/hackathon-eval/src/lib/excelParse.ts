@@ -56,8 +56,9 @@ export function parseEvaluatorRows(rows: Record<string, string>[]): ParsedEvalua
       const name = pick(row, "evaluatorname", "evaluator name", "name");
       if (!name) return null;
 
-      const srRaw = pick(row, "sr no", "srno", "s no", "serial");
-      const srNo = srRaw ? Number(srRaw) : index + 1;
+      const srRaw = pick(row, "sr no", "srno", "s no", "serial", "sr. no");
+      const parsedSr = srRaw ? parseInt(String(srRaw).trim(), 10) : index + 1;
+      const srNo = Number.isInteger(parsedSr) && parsedSr >= 1 ? parsedSr : index + 1;
       const venue = pick(row, "venue");
       const teamsRaw = pick(row, "team ids", "team id", "assigned teams", "teams");
       const assignedTeamIds = teamsRaw

@@ -13,7 +13,11 @@ import {
   type QueryDocumentSnapshot,
   type Unsubscribe,
 } from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut,
+} from "firebase/auth";
 import { db, secondaryAuth } from "./firebase";
 import { generateEvaluatorEmail, generateEvaluatorPassword } from "./credentials";
 import type { ParsedEvaluatorRow, ParsedTeamRow } from "./excelParse";
@@ -36,12 +40,85 @@ export interface TeamUploadResult {
 }
 
 function parseSrNo(value: unknown): number | null {
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1) {
+    const n = Math.trunc(value);
+    return n >= 1 ? n : null;
+  }
   if (typeof value === "string" && value.trim()) {
-    const n = Number(value.trim());
-    if (Number.isInteger(n) && n > 0) return n;
+    const n = parseInt(value.trim(), 10);
+    if (Number.isInteger(n) && n >= 1) return n;
   }
   return null;
+}
+
+async function buildEvaluatorLookupMaps(): Promise<{
+  srToUid: Map<number, string>;
+  emailToUid: Map<string, string>;
+}> {
+  const srToUid = new Map<number, string>();
+  const emailToUid = new Map<string, string>();
+
+  const ingest = (uid: string, data: Record<string, unknown>) => {
+    const sr = parseSrNo(data.srNo);
+    if (sr !== null) srToUid.set(sr, uid);
+    const email = String(data.email ?? "").trim().toLowerCase();
+    if (email) emailToUid.set(email, uid);
+  };
+
+  const [evalSnap, userSnap] = await Promise.all([
+    getDocs(collection(db, "evaluators")),
+    getDocs(query(collection(db, "users"), where("role", "==", "evaluator"))),
+  ]);
+
+  for (const d of evalSnap.docs) ingest(d.id, d.data());
+  for (const d of userSnap.docs) ingest(d.id, d.data());
+
+  return { srToUid, emailToUid };
+}
+
+async function writeEvaluatorFromExcelRow(
+  uid: string,
+  row: ParsedEvaluatorRow,
+  email: string,
+  password: string,
+): Promise<void> {
+  await setDoc(
+    doc(db, "users", uid),
+    {
+      name: row.name,
+      email,
+      role: "evaluator",
+      disabled: false,
+      venue: row.venue,
+      srNo: row.srNo,
+      assignedTeamIds: row.assignedTeamIds,
+      updatedAt: new Date().toISOString(),
+    },
+    { merge: true },
+  );
+
+  await setDoc(
+    doc(db, "evaluators", uid),
+    {
+      uid,
+      srNo: row.srNo,
+      name: row.name,
+      email,
+      password,
+      venue: row.venue,
+      assignedTeamIds: row.assignedTeamIds,
+      updatedAt: new Date().toISOString(),
+    },
+    { merge: true },
+  );
+}
+
+async function signOutSecondaryAuth(): Promise<void> {
+  try {
+    await firebaseSignOut(secondaryAuth);
+  } catch {
+    // ignore
+  }
 }
 
 /** Collect all Sr. numbers already used in users + evaluators collections. */
@@ -69,15 +146,17 @@ export async function uploadEvaluatorsFromExcel(
   onProgress?: (done: number, total: number) => void,
 ): Promise<EvaluatorUploadResult[]> {
   const results: EvaluatorUploadResult[] = [];
-  const existingSrNos = await getExistingSrNumbers();
+  const { srToUid, emailToUid } = await buildEvaluatorLookupMaps();
   const pendingSrNos = new Set<number>();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const email = generateEvaluatorEmail(row.name);
     const password = generateEvaluatorPassword(row.name);
+    const emailKey = email.toLowerCase();
 
-    if (!Number.isInteger(row.srNo) || row.srNo < 1) {
+    const srNo = parseSrNo(row.srNo);
+    if (srNo === null) {
       results.push({
         name: row.name,
         email,
@@ -89,17 +168,75 @@ export async function uploadEvaluatorsFromExcel(
       onProgress?.(i + 1, rows.length);
       continue;
     }
+    row.srNo = srNo;
 
-    if (existingSrNos.has(row.srNo) || pendingSrNos.has(row.srNo)) {
+    const existingUidByEmail = emailToUid.get(emailKey);
+    const existingUidBySr = srToUid.get(srNo);
+
+    if (existingUidBySr && existingUidByEmail && existingUidBySr !== existingUidByEmail) {
       results.push({
         name: row.name,
         email,
         password,
         venue: row.venue,
         status: "skipped",
-        message: existingSrNos.has(row.srNo)
-          ? `Sr. No ${row.srNo} already exists.`
-          : `Duplicate Sr. No ${row.srNo} in this file.`,
+        message: `Sr. No ${srNo} belongs to another evaluator. Use a unique Sr. No.`,
+      });
+      onProgress?.(i + 1, rows.length);
+      continue;
+    }
+
+    if (pendingSrNos.has(srNo) && !existingUidByEmail && !existingUidBySr) {
+      results.push({
+        name: row.name,
+        email,
+        password,
+        venue: row.venue,
+        status: "skipped",
+        message: `Duplicate Sr. No ${srNo} in this file.`,
+      });
+      onProgress?.(i + 1, rows.length);
+      continue;
+    }
+
+    const existingUid = existingUidByEmail ?? existingUidBySr;
+
+    if (existingUid) {
+      try {
+        await writeEvaluatorFromExcelRow(existingUid, row, email, password);
+        srToUid.set(srNo, existingUid);
+        emailToUid.set(emailKey, existingUid);
+        pendingSrNos.add(srNo);
+        results.push({
+          name: row.name,
+          email,
+          password,
+          venue: row.venue,
+          status: "created",
+          message: existingUidByEmail ? "Existing evaluator updated." : "Existing Sr. No synced.",
+        });
+      } catch (err: unknown) {
+        results.push({
+          name: row.name,
+          email,
+          password,
+          venue: row.venue,
+          status: "error",
+          message: err instanceof Error ? err.message : "Failed to update evaluator.",
+        });
+      }
+      onProgress?.(i + 1, rows.length);
+      continue;
+    }
+
+    if (srToUid.has(srNo)) {
+      results.push({
+        name: row.name,
+        email,
+        password,
+        venue: row.venue,
+        status: "skipped",
+        message: `Sr. No ${srNo} is already used by another evaluator.`,
       });
       onProgress?.(i + 1, rows.length);
       continue;
@@ -107,7 +244,6 @@ export async function uploadEvaluatorsFromExcel(
 
     try {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
-
       await setDoc(doc(db, "users", cred.user.uid), {
         name: row.name,
         email,
@@ -118,7 +254,6 @@ export async function uploadEvaluatorsFromExcel(
         assignedTeamIds: row.assignedTeamIds,
         createdAt: serverTimestamp(),
       });
-
       await setDoc(doc(db, "evaluators", cred.user.uid), {
         uid: cred.user.uid,
         srNo: row.srNo,
@@ -129,21 +264,43 @@ export async function uploadEvaluatorsFromExcel(
         assignedTeamIds: row.assignedTeamIds,
         createdAt: new Date().toISOString(),
       });
+      await signOutSecondaryAuth();
 
-      pendingSrNos.add(row.srNo);
-      existingSrNos.add(row.srNo);
+      srToUid.set(srNo, cred.user.uid);
+      emailToUid.set(emailKey, cred.user.uid);
+      pendingSrNos.add(srNo);
       results.push({ name: row.name, email, password, venue: row.venue, status: "created" });
     } catch (err: unknown) {
+      await signOutSecondaryAuth();
       const msg = err instanceof Error ? err.message : "Unknown error";
+
       if (msg.includes("email-already-in-use")) {
-        results.push({
-          name: row.name,
-          email,
-          password,
-          venue: row.venue,
-          status: "skipped",
-          message: "Email already registered",
-        });
+        try {
+          const cred = await signInWithEmailAndPassword(secondaryAuth, email, password);
+          await writeEvaluatorFromExcelRow(cred.user.uid, row, email, password);
+          await signOutSecondaryAuth();
+          srToUid.set(srNo, cred.user.uid);
+          emailToUid.set(emailKey, cred.user.uid);
+          pendingSrNos.add(srNo);
+          results.push({
+            name: row.name,
+            email,
+            password,
+            venue: row.venue,
+            status: "created",
+            message: "Recovered existing login and synced profile.",
+          });
+        } catch {
+          await signOutSecondaryAuth();
+          results.push({
+            name: row.name,
+            email,
+            password,
+            venue: row.venue,
+            status: "skipped",
+            message: "Email already registered with a different password. Delete the old account or use Manage Users.",
+          });
+        }
       } else {
         results.push({
           name: row.name,
