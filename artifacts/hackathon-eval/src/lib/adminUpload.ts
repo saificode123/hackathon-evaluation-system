@@ -23,6 +23,13 @@ import { generateEvaluatorEmail, generateEvaluatorPassword } from "./credentials
 import type { ParsedEvaluatorRow, ParsedTeamRow } from "./excelParse";
 import type { EvaluatorRecord } from "./types";
 import { isValidPrefixedId, normalizePrefixedIdKey } from "./idFormat";
+import { saveTotalTeams } from "./settings";
+
+async function syncSettingsToUploadedTeamCount(updatedBy = "Auto-sync"): Promise<number> {
+  const count = await getUploadedTeamsCount();
+  await saveTotalTeams(count, updatedBy);
+  return count;
+}
 
 export interface EvaluatorUploadResult {
   name: string;
@@ -319,7 +326,10 @@ export async function uploadEvaluatorsFromExcel(
   return results;
 }
 
-/** Normalize team ID to a stable Firestore document id. */
+/** Sync hackathon settings team count after bulk team upload. */
+export async function syncTeamCountAfterUpload(updatedBy = "Auto-sync"): Promise<number> {
+  return syncSettingsToUploadedTeamCount(updatedBy);
+}
 export function normalizeTeamDocId(teamId: string): string {
   return teamId.trim().toLowerCase().replace(/\s+/g, "-");
 }
@@ -390,10 +400,9 @@ export async function uploadTeamsFromExcel(
     onProgress?.(Math.min(offset + chunk.length, rows.length), rows.length);
   }
 
+  await syncSettingsToUploadedTeamCount();
   return results;
 }
-
-/** Existing Team IDs in Firestore (case-insensitive). */
 export async function getExistingTeamIdKeys(): Promise<Set<string>> {
   const snap = await getDocs(collection(db, "teams"));
   const keys = new Set<string>();
@@ -604,6 +613,7 @@ export async function deleteAllEvaluators(
 /** Delete a single team by Firestore document id. */
 export async function deleteTeam(docId: string): Promise<void> {
   await deleteDoc(doc(db, "teams", docId));
+  await syncSettingsToUploadedTeamCount();
 }
 
 /** Delete all teams in batched writes. */
@@ -611,7 +621,10 @@ export async function deleteAllTeams(
   onProgress?: (done: number, total: number) => void,
 ): Promise<number> {
   const snap = await getDocs(collection(db, "teams"));
-  if (snap.empty) return 0;
+  if (snap.empty) {
+    await saveTotalTeams(0, "Auto-sync");
+    return 0;
+  }
 
   const docs = snap.docs;
   const BATCH_SIZE = 450;
@@ -626,6 +639,7 @@ export async function deleteAllTeams(
     onProgress?.(Math.min(offset + chunk.length, docs.length), docs.length);
   }
 
+  await saveTotalTeams(0, "Auto-sync");
   return docs.length;
 }
 

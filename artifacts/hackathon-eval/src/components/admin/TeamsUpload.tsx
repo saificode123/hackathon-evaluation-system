@@ -87,6 +87,7 @@ export default function TeamsUpload({ onTeamsChanged }: TeamsUploadProps) {
       await deleteTeam(team.id);
       setTeams((prev) => prev.filter((t) => t.id !== team.id));
       setSuccess(`Team ${team.teamId} deleted.`);
+      onTeamsChanged?.();
     } catch {
       setError(`Failed to delete team ${team.teamId}.`);
     } finally {
@@ -108,6 +109,7 @@ export default function TeamsUpload({ onTeamsChanged }: TeamsUploadProps) {
       setSuccess(count > 0 ? `All ${count} teams deleted.` : "No teams to delete.");
       setShowDeleteAll(false);
       setDeleteAllConfirm("");
+      onTeamsChanged?.();
     } catch {
       setError("Failed to delete all teams. Check Firestore rules.");
     } finally {

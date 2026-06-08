@@ -15,7 +15,7 @@ import EvaluatorsUpload from "../../components/admin/EvaluatorsUpload";
 import EvaluatorTeamAssignment from "../../components/admin/EvaluatorTeamAssignment";
 import TeamsUpload from "../../components/admin/TeamsUpload";
 import ProblemsManager from "../../components/admin/ProblemsManager";
-import { getUploadedTeamsCount } from "../../lib/adminUpload";
+import { getUploadedTeamsCount, subscribeUploadedTeamsCount } from "../../lib/adminUpload";
 
 export default function AdminDashboard() {
   const { user } = useAuth();
@@ -24,14 +24,24 @@ export default function AdminDashboard() {
   const [totalTeams, setTotalTeams] = useState(0);
   const [teamInput, setTeamInput] = useState("");
   const [uploadedTeamsCount, setUploadedTeamsCount] = useState(0);
+  const [uploadCountReady, setUploadCountReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
   const uploadedCountRef = useRef(0);
+  const uploadedCountReadyRef = useRef(false);
 
   useEffect(() => {
     let evaluations: Evaluation[] = [];
+
+    const applyUploadedCount = (count: number) => {
+      setUploadedTeamsCount(count);
+      uploadedCountRef.current = count;
+      uploadedCountReadyRef.current = true;
+      setUploadCountReady(true);
+      setTeamInput(count > 0 ? String(count) : "");
+    };
 
     const recomputeStats = () => {
       const projectIds = new Set(evaluations.map((e) => e.projectId));
@@ -44,13 +54,14 @@ export default function AdminDashboard() {
 
     const unsubSettings = subscribeHackathonSettings((settings) => {
       setTotalTeams(settings.totalTeams);
-      // Prefer unique uploaded team count over stale saved settings
-      if (uploadedCountRef.current > 0) {
-        setTeamInput(String(uploadedCountRef.current));
+      if (uploadedCountReadyRef.current) {
+        setTeamInput(uploadedCountRef.current > 0 ? String(uploadedCountRef.current) : "");
       } else {
         setTeamInput(String(settings.totalTeams > 0 ? settings.totalTeams : ""));
       }
     });
+
+    const unsubTeams = subscribeUploadedTeamsCount(applyUploadedCount);
 
     const unsubEvals = onSnapshot(collection(db, "evaluations"), (snap) => {
       evaluations = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
@@ -59,16 +70,10 @@ export default function AdminDashboard() {
 
     (async () => {
       try {
-        const [evalSnap, coordSnap, teamsCount] = await Promise.all([
+        const [evalSnap, coordSnap] = await Promise.all([
           getDocs(query(collection(db, "users"), where("role", "==", "evaluator"))),
           getDocs(query(collection(db, "users"), where("role", "==", "coordinator"))),
-          getUploadedTeamsCount(),
         ]);
-        setUploadedTeamsCount(teamsCount);
-        uploadedCountRef.current = teamsCount;
-        if (teamsCount > 0) {
-          setTeamInput(String(teamsCount));
-        }
         setStats((prev) => ({
           ...prev,
           evaluators: evalSnap.size,
@@ -83,21 +88,22 @@ export default function AdminDashboard() {
 
     return () => {
       unsubSettings();
+      unsubTeams();
       unsubEvals();
     };
   }, []);
 
   const evaluatedTeams = stats.projects;
-  const effectiveTotalTeams = getEffectiveTotalTeams(uploadedTeamsCount, totalTeams);
+  const effectiveTotalTeams = getEffectiveTotalTeams(uploadedTeamsCount, totalTeams, uploadCountReady);
 
   const refreshUploadedTeamsCount = async () => {
     try {
       const count = await getUploadedTeamsCount();
       setUploadedTeamsCount(count);
       uploadedCountRef.current = count;
-      if (count > 0) {
-        setTeamInput(String(count));
-      }
+      uploadedCountReadyRef.current = true;
+      setUploadCountReady(true);
+      setTeamInput(count > 0 ? String(count) : "");
     } catch {
       // ignore
     }
@@ -185,7 +191,7 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {uploadedTeamsCount > 0 && (
+            {uploadCountReady && (
               <div
                 style={{
                   display: "flex",
@@ -200,15 +206,17 @@ export default function AdminDashboard() {
                 }}
               >
                 <span>
-                  <strong>{uploadedTeamsCount}</strong> teams found in uploaded Excel data.
+                  <strong>{uploadedTeamsCount}</strong> team{uploadedTeamsCount !== 1 ? "s" : ""} in uploaded Excel data.
                 </span>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={handleUseUploadedCount}
-                >
-                  Use uploaded count ({uploadedTeamsCount})
-                </button>
+                {uploadedTeamsCount > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleUseUploadedCount}
+                  >
+                    Use uploaded count ({uploadedTeamsCount})
+                  </button>
+                )}
               </div>
             )}
 

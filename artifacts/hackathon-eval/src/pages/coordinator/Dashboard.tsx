@@ -15,6 +15,7 @@ export default function CoordinatorDashboard() {
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [settingsTotalTeams, setSettingsTotalTeams] = useState(0);
   const [uploadedTeamsCount, setUploadedTeamsCount] = useState(0);
+  const [uploadCountReady, setUploadCountReady] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -22,7 +23,10 @@ export default function CoordinatorDashboard() {
       setSettingsTotalTeams(settings.totalTeams);
     });
 
-    const unsubTeams = subscribeUploadedTeamsCount(setUploadedTeamsCount);
+    const unsubTeams = subscribeUploadedTeamsCount((count) => {
+      setUploadedTeamsCount(count);
+      setUploadCountReady(true);
+    });
 
     const unsubEvals = onSnapshot(collection(db, "evaluations"), (snap) => {
       setEvaluations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation)));
@@ -36,7 +40,7 @@ export default function CoordinatorDashboard() {
     };
   }, []);
 
-  const totalTeams = getEffectiveTotalTeams(uploadedTeamsCount, settingsTotalTeams);
+  const totalTeams = getEffectiveTotalTeams(uploadedTeamsCount, settingsTotalTeams, uploadCountReady);
 
   const evaluatedTeams = countEvaluatedTeams(evaluations);
 
